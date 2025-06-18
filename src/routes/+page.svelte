@@ -117,7 +117,7 @@
 
 		{#if apiStatus === 'offline'}
 			<!-- The error state when the API call failed -->
-			<div class="rounded-lg border border-red-500 bg-red-900/50 p-6 text-center">
+			<div class="rounded-lg border border-red-600 bg-red-900/50 p-6 text-center">
 				<div class="mb-3 flex items-center justify-center">
 					<svg
 						xmlns="http://www.w3.org/2000/svg"
