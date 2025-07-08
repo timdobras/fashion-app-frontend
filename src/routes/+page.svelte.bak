@@ -1,0 +1,871 @@
+<script>
+	import { onMount } from 'svelte';
+
+	// --- Reactive State ---
+	let apiStatus = 'checking'; // 'checking', 'online', or 'offline'
+	let allImages = [];
+	let imageStats = null;
+	let errorMessage = '';
+	let healthData = null;
+	let categories = [];
+	let isDiscoveringImages = false;
+	let discoveryError = '';
+
+	// Upload and search state
+	let selectedFile = null;
+	let uploadResults = null;
+	let classificationResults = null;
+	let isUploading = false;
+	let isClassifying = false;
+	let searchProgress = '';
+
+	// UI state
+	let activeTab = 'gallery'; // 'gallery', 'upload', 'classify', 'health'
+	let imageFilter = 'all'; // 'all', 'validation', 'training', 'uploaded'
+
+	const API_URL = 'https://fashionserver.timdobras.com';
+
+	// Fallback images in case discovery fails
+	const fallbackImages = [
+		'031195.jpg',
+		'031218.jpg',
+		'031223.jpg',
+		'031229.jpg',
+		'031234.jpg',
+		'031250.jpg',
+		'031253.jpg',
+		'031257.jpg',
+		'031272.jpg',
+		'031285.jpg'
+	];
+
+	// --- API Functions ---
+	async function checkHealth() {
+		try {
+			const response = await fetch(`${API_URL}/health`);
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			healthData = await response.json();
+			return true;
+		} catch (error) {
+			console.error('Health check failed:', error);
+			healthData = null;
+			return false;
+		}
+	}
+
+	async function fetchCategories() {
+		try {
+			const response = await fetch(`${API_URL}/categories`);
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			const data = await response.json();
+			categories = data.categories || [];
+		} catch (error) {
+			console.error('Failed to fetch categories:', error);
+			categories = [];
+		}
+	}
+
+	async function discoverAllImages() {
+		isDiscoveringImages = true;
+		discoveryError = '';
+
+		try {
+			const response = await fetch(`${API_URL}/discover-images`);
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+			const data = await response.json();
+			allImages = data.images || [];
+			imageStats = data.breakdown || { validation: 0, training: 0, uploaded: 0 };
+
+			console.log(`📸 Discovered ${data.total_images} total images:`, data.breakdown);
+
+			// If no images discovered, use fallback
+			if (allImages.length === 0) {
+				console.warn('No images discovered, using fallback images');
+				allImages = fallbackImages.map((filename) => ({
+					filename,
+					type: 'validation',
+					url: `/images/${filename}`,
+					directory: '/mnt/truenas/fashion-app-ml/data/validation/image'
+				}));
+				imageStats = { validation: fallbackImages.length, training: 0, uploaded: 0 };
+			}
+		} catch (error) {
+			console.error('Failed to discover images:', error);
+			discoveryError = error.message;
+
+			// Use fallback images
+			allImages = fallbackImages.map((filename) => ({
+				filename,
+				type: 'validation',
+				url: `/images/${filename}`,
+				directory: '/mnt/truenas/fashion-app-ml/data/validation/image'
+			}));
+			imageStats = { validation: fallbackImages.length, training: 0, uploaded: 0 };
+		} finally {
+			isDiscoveringImages = false;
+		}
+	}
+
+	async function uploadAndSearch(file) {
+		isUploading = true;
+		uploadResults = null;
+		searchProgress = 'Uploading image...';
+
+		try {
+			const formData = new FormData();
+			formData.append('file', file);
+
+			searchProgress = 'Processing with AI models...';
+			const response = await fetch(`${API_URL}/upload-fashion-image`, {
+				method: 'POST',
+				body: formData
+			});
+
+			if (!response.ok) {
+				const errorData = await response.json();
+				throw new Error(errorData.detail || `HTTP ${response.status}`);
+			}
+
+			searchProgress = 'Generating results...';
+			uploadResults = await response.json();
+			searchProgress = '';
+
+			// Refresh images to include the newly uploaded one
+			if (uploadResults.success) {
+				setTimeout(() => {
+					discoverAllImages();
+				}, 1000);
+			}
+		} catch (error) {
+			console.error('Upload failed:', error);
+			uploadResults = { success: false, error: error.message };
+			searchProgress = '';
+		} finally {
+			isUploading = false;
+		}
+	}
+
+	async function classifyImage(file) {
+		isClassifying = true;
+		classificationResults = null;
+
+		try {
+			const formData = new FormData();
+			formData.append('file', file);
+
+			const response = await fetch(`${API_URL}/classify-image`, {
+				method: 'POST',
+				body: formData
+			});
+
+			if (!response.ok) {
+				const errorData = await response.json();
+				throw new Error(errorData.detail || `HTTP ${response.status}`);
+			}
+
+			classificationResults = await response.json();
+		} catch (error) {
+			console.error('Classification failed:', error);
+			classificationResults = { success: false, error: error.message };
+		} finally {
+			isClassifying = false;
+		}
+	}
+
+	// --- Event Handlers ---
+	function handleFileSelect(event) {
+		const file = event.target.files[0];
+		if (file && file.type.startsWith('image/')) {
+			selectedFile = file;
+			// Clear previous results when new file is selected
+			uploadResults = null;
+			classificationResults = null;
+		} else {
+			alert('Please select a valid image file');
+		}
+	}
+
+	function handleUploadAndSearch() {
+		if (selectedFile) {
+			uploadAndSearch(selectedFile);
+		}
+	}
+
+	function handleClassifyOnly() {
+		if (selectedFile) {
+			classifyImage(selectedFile);
+		}
+	}
+
+	function refreshImages() {
+		discoverAllImages();
+	}
+
+	function refreshHealth() {
+		checkHealth();
+	}
+
+	// Filter images based on type
+	$: filteredImages =
+		imageFilter === 'all' ? allImages : allImages.filter((img) => img.type === imageFilter);
+
+	// Initialize on mount
+	onMount(async () => {
+		try {
+			const statusResponse = await fetch(API_URL);
+			if (!statusResponse.ok) {
+				throw new Error(`Server responded with status: ${statusResponse.status}`);
+			}
+
+			apiStatus = 'online';
+
+			// Load all data
+			await Promise.all([discoverAllImages(), checkHealth(), fetchCategories()]);
+		} catch (error) {
+			console.error('API Error:', error);
+			apiStatus = 'offline';
+			errorMessage = error.message;
+		}
+	});
+</script>
+
+<div class="min-h-screen bg-gray-900 p-4 font-sans text-white">
+	<div class="mx-auto max-w-6xl">
+		<h1 class="mb-6 text-center text-3xl font-bold text-cyan-400">Fashion Retrieval System</h1>
+
+		<!-- Navigation Tabs -->
+		<div class="mb-8 flex justify-center">
+			<div class="flex rounded-lg bg-gray-800 p-1">
+				<button
+					class="rounded px-4 py-2 text-sm font-medium transition-colors {activeTab === 'gallery'
+						? 'bg-cyan-600 text-white'
+						: 'text-gray-300 hover:text-white'}"
+					on:click={() => (activeTab = 'gallery')}
+				>
+					Gallery
+				</button>
+				<button
+					class="rounded px-4 py-2 text-sm font-medium transition-colors {activeTab === 'upload'
+						? 'bg-cyan-600 text-white'
+						: 'text-gray-300 hover:text-white'}"
+					on:click={() => (activeTab = 'upload')}
+				>
+					Upload & Search
+				</button>
+				<button
+					class="rounded px-4 py-2 text-sm font-medium transition-colors {activeTab === 'classify'
+						? 'bg-cyan-600 text-white'
+						: 'text-gray-300 hover:text-white'}"
+					on:click={() => (activeTab = 'classify')}
+				>
+					Classify Only
+				</button>
+				<button
+					class="rounded px-4 py-2 text-sm font-medium transition-colors {activeTab === 'health'
+						? 'bg-cyan-600 text-white'
+						: 'text-gray-300 hover:text-white'}"
+					on:click={() => (activeTab = 'health')}
+				>
+					System Status
+				</button>
+			</div>
+		</div>
+
+		<!-- API Status Card -->
+		<div
+			class="mx-auto mb-8 w-full max-w-md rounded-xl border border-gray-700 bg-gray-800 p-6 shadow-lg"
+		>
+			<h2 class="mb-4 text-center text-xl font-bold text-cyan-400">API Status</h2>
+			{#if apiStatus === 'checking'}
+				<div class="flex items-center justify-center rounded-lg bg-gray-700 p-4">
+					<svg
+						class="mr-3 h-5 w-5 animate-spin text-cyan-400"
+						xmlns="http://www.w3.org/2000/svg"
+						fill="none"
+						viewBox="0 0 24 24"
+					>
+						<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"
+						></circle>
+						<path
+							class="opacity-75"
+							fill="currentColor"
+							d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+						></path>
+					</svg>
+					<span>Checking API status...</span>
+				</div>
+			{/if}
+			{#if apiStatus === 'online'}
+				<div class="text-center text-lg font-bold text-green-400">✅ Online</div>
+			{/if}
+			{#if apiStatus === 'offline'}
+				<div class="text-center">
+					<p class="text-lg font-bold text-red-400">❌ Offline</p>
+					<p class="mt-2 font-mono text-sm text-gray-400">{errorMessage}</p>
+				</div>
+			{/if}
+		</div>
+
+		{#if apiStatus === 'online'}
+			<!-- Gallery Tab -->
+			{#if activeTab === 'gallery'}
+				<div>
+					<div class="mb-6 flex items-center justify-between">
+						<h2 class="text-2xl font-semibold">Image Showcase</h2>
+						<button
+							on:click={refreshImages}
+							disabled={isDiscoveringImages}
+							class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-cyan-700 disabled:bg-gray-600"
+						>
+							{#if isDiscoveringImages}
+								<svg class="mr-2 inline h-4 w-4 animate-spin" viewBox="0 0 24 24">
+									<circle
+										class="opacity-25"
+										cx="12"
+										cy="12"
+										r="10"
+										stroke="currentColor"
+										stroke-width="4"
+										fill="none"
+									></circle>
+									<path
+										class="opacity-75"
+										fill="currentColor"
+										d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+									></path>
+								</svg>
+								Discovering...
+							{:else}
+								🔄 Refresh Images
+							{/if}
+						</button>
+					</div>
+
+					<!-- Discovery Error -->
+					{#if discoveryError}
+						<div class="mb-4 rounded-lg border border-yellow-600 bg-yellow-900 p-4">
+							<p class="text-yellow-300">⚠️ Image discovery issue: {discoveryError}</p>
+							<p class="mt-1 text-sm text-yellow-400">
+								Using fallback images. Check your TrueNAS connection.
+							</p>
+						</div>
+					{/if}
+
+					<!-- Image Statistics and Filter -->
+					{#if imageStats}
+						<div class="mb-6 flex flex-wrap items-center justify-center gap-4">
+							<!-- Statistics -->
+							<div class="flex space-x-4 text-sm">
+								<span class="rounded bg-blue-600 px-3 py-1">
+									Validation: {imageStats.validation}
+								</span>
+								<span class="rounded bg-green-600 px-3 py-1">
+									Training: {imageStats.training}
+								</span>
+								<span class="rounded bg-purple-600 px-3 py-1">
+									Uploaded: {imageStats.uploaded}
+								</span>
+							</div>
+
+							<!-- Filter -->
+							<div class="flex rounded-lg bg-gray-800 p-1">
+								<button
+									class="rounded px-3 py-1 text-xs transition-colors {imageFilter === 'all'
+										? 'bg-gray-600 text-white'
+										: 'text-gray-300 hover:text-white'}"
+									on:click={() => (imageFilter = 'all')}
+								>
+									All ({allImages.length})
+								</button>
+								<button
+									class="rounded px-3 py-1 text-xs transition-colors {imageFilter === 'validation'
+										? 'bg-blue-600 text-white'
+										: 'text-gray-300 hover:text-white'}"
+									on:click={() => (imageFilter = 'validation')}
+								>
+									Validation ({imageStats.validation})
+								</button>
+								<button
+									class="rounded px-3 py-1 text-xs transition-colors {imageFilter === 'training'
+										? 'bg-green-600 text-white'
+										: 'text-gray-300 hover:text-white'}"
+									on:click={() => (imageFilter = 'training')}
+								>
+									Training ({imageStats.training})
+								</button>
+								<button
+									class="rounded px-3 py-1 text-xs transition-colors {imageFilter === 'uploaded'
+										? 'bg-purple-600 text-white'
+										: 'text-gray-300 hover:text-white'}"
+									on:click={() => (imageFilter = 'uploaded')}
+								>
+									Uploaded ({imageStats.uploaded})
+								</button>
+							</div>
+						</div>
+					{/if}
+
+					<!-- Image Grid -->
+					{#if filteredImages.length > 0}
+						<div class="grid grid-cols-2 gap-4 md:grid-cols-5">
+							{#each filteredImages.slice(0, 50) as imageInfo (imageInfo.filename)}
+								<div
+									class="group overflow-hidden rounded-lg bg-gray-800 shadow-md transition-transform hover:scale-105"
+								>
+									<div class="relative">
+										<img
+											src="{API_URL}{imageInfo.url}"
+											alt="Fashion item {imageInfo.filename}"
+											class="h-48 w-full object-cover transition-transform duration-300 group-hover:scale-110"
+											loading="lazy"
+											on:error={(e) => {
+												console.warn(`Failed to load image: ${imageInfo.filename}`);
+												e.target.src =
+													'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><rect width="200" height="200" fill="%23374151"/><text x="100" y="100" text-anchor="middle" dy="0.3em" fill="%239CA3AF" font-family="Arial" font-size="12">Image Not Found</text></svg>';
+											}}
+										/>
+										<div class="absolute top-2 right-2">
+											<span
+												class="inline-block rounded px-2 py-1 text-xs font-medium {imageInfo.type ===
+												'validation'
+													? 'bg-blue-600'
+													: imageInfo.type === 'training'
+														? 'bg-green-600'
+														: 'bg-purple-600'}"
+											>
+												{imageInfo.type}
+											</span>
+										</div>
+									</div>
+									<div class="p-2">
+										<p class="truncate text-xs text-gray-400" title={imageInfo.filename}>
+											{imageInfo.filename}
+										</p>
+									</div>
+								</div>
+							{/each}
+						</div>
+
+						<!-- Show total count -->
+						{#if filteredImages.length > 50}
+							<p class="mt-4 text-center text-gray-400">
+								Showing first 50 of {filteredImages.length}
+								{imageFilter === 'all' ? '' : imageFilter} images
+							</p>
+						{/if}
+					{:else}
+						<div class="py-12 text-center">
+							<p class="mb-4 text-gray-400">
+								No {imageFilter === 'all' ? '' : imageFilter} images found
+							</p>
+							{#if imageFilter !== 'all'}
+								<button
+									on:click={() => (imageFilter = 'all')}
+									class="text-cyan-400 underline hover:text-cyan-300"
+								>
+									Show all images
+								</button>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- Upload & Search Tab -->
+			{#if activeTab === 'upload'}
+				<div class="space-y-6">
+					<h2 class="text-center text-2xl font-semibold">Upload & Find Similar Items</h2>
+
+					<!-- File Upload -->
+					<div class="mx-auto max-w-md rounded-xl border border-gray-700 bg-gray-800 p-6">
+						<label class="mb-4 block text-sm font-medium text-gray-300">
+							Select Fashion Image
+						</label>
+						<input
+							type="file"
+							accept="image/*"
+							on:change={handleFileSelect}
+							class="mb-4 w-full rounded-lg border border-gray-600 bg-gray-700 p-2 text-white file:mr-4 file:rounded file:border-0 file:bg-cyan-600 file:px-4 file:py-2 file:text-white file:hover:bg-cyan-700"
+						/>
+
+						{#if selectedFile}
+							<div class="mb-4 text-center">
+								<p class="text-sm text-green-400">✅ {selectedFile.name} selected</p>
+								<img
+									src={URL.createObjectURL(selectedFile)}
+									alt="Preview"
+									class="mx-auto mt-2 max-h-32 rounded border border-gray-600"
+								/>
+							</div>
+						{/if}
+
+						<button
+							on:click={handleUploadAndSearch}
+							disabled={!selectedFile || isUploading}
+							class="w-full rounded-lg bg-cyan-600 px-4 py-2 font-medium text-white transition-colors hover:bg-cyan-700 disabled:cursor-not-allowed disabled:bg-gray-600"
+						>
+							{#if isUploading}
+								<span class="flex items-center justify-center">
+									<svg class="mr-2 h-4 w-4 animate-spin" viewBox="0 0 24 24">
+										<circle
+											class="opacity-25"
+											cx="12"
+											cy="12"
+											r="10"
+											stroke="currentColor"
+											stroke-width="4"
+											fill="none"
+										></circle>
+										<path
+											class="opacity-75"
+											fill="currentColor"
+											d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+										></path>
+									</svg>
+									{searchProgress || 'Processing...'}
+								</span>
+							{:else}
+								🔍 Upload & Search Similar Items
+							{/if}
+						</button>
+					</div>
+
+					<!-- Upload Results -->
+					{#if uploadResults}
+						<div class="rounded-xl border border-gray-700 bg-gray-800 p-6">
+							{#if uploadResults.success}
+								<h3 class="mb-4 text-xl font-semibold text-green-400">✅ Analysis Complete</h3>
+
+								<!-- Uploaded Image Display -->
+								<div class="mb-6 text-center">
+									<h4 class="mb-2 font-semibold text-cyan-400">Uploaded Image</h4>
+									<img
+										src="{API_URL}{uploadResults.uploaded_image_url}"
+										alt="Uploaded fashion item"
+										class="mx-auto max-h-48 rounded border border-gray-600"
+									/>
+								</div>
+
+								<!-- Classification Result -->
+								<div class="mb-6 rounded-lg bg-gray-700 p-4">
+									<h4 class="mb-2 font-semibold text-cyan-400">Classification</h4>
+									<p class="text-lg">
+										<span class="font-bold">{uploadResults.predicted_category}</span>
+										<span class="ml-2 text-sm text-gray-400">
+											({(uploadResults.confidence * 100).toFixed(1)}% confidence)
+										</span>
+									</p>
+									<p class="text-sm text-gray-400">
+										Processing time: {uploadResults.processing_time.toFixed(2)}s
+									</p>
+								</div>
+
+								<!-- Similar Items -->
+								{#if uploadResults.similar_items && uploadResults.similar_items.length > 0}
+									<div>
+										<h4 class="mb-4 font-semibold text-cyan-400">
+											Similar Items ({uploadResults.similar_items.length} found)
+										</h4>
+										<div class="grid grid-cols-2 gap-4 md:grid-cols-5">
+											{#each uploadResults.similar_items as item (item.id)}
+												<a
+													href="{API_URL}{item.image_url}"
+													class="overflow-hidden rounded-lg bg-gray-700 transition-transform hover:scale-105"
+												>
+													<img
+														src="{API_URL}{item.image_url}"
+														alt={item.category}
+														class="h-32 w-full object-cover"
+														loading="lazy"
+														on:error={(e) => {
+															e.target.src =
+																'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" fill="%23374151"/><text x="64" y="64" text-anchor="middle" dy="0.3em" fill="%239CA3AF" font-family="Arial" font-size="10">Not Found</text></svg>';
+														}}
+													/>
+													<div class="p-2 text-xs">
+														<p class="truncate font-semibold" title={item.category}>
+															{item.category}
+														</p>
+														<p class="text-gray-400">
+															{(item.similarity_score * 100).toFixed(1)}% similar
+														</p>
+														{#if item.metadata?.rank}
+															<p class="text-gray-500">Rank: {item.metadata.rank}</p>
+														{/if}
+													</div>
+												</a>
+											{/each}
+										</div>
+									</div>
+								{:else}
+									<div class="py-8 text-center">
+										<p class="mb-2 text-gray-400">No similar items found in the database.</p>
+										<p class="text-sm text-gray-500">This might be the first item of its kind!</p>
+									</div>
+								{/if}
+							{:else}
+								<div class="text-center">
+									<h3 class="mb-2 text-xl font-semibold text-red-400">❌ Upload Failed</h3>
+									<p class="text-gray-400">{uploadResults.error}</p>
+									<p class="mt-2 text-sm text-gray-500">
+										Please try again or check your image file.
+									</p>
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- Classify Only Tab -->
+			{#if activeTab === 'classify'}
+				<div class="space-y-6">
+					<h2 class="text-center text-2xl font-semibold">Image Classification</h2>
+
+					<!-- File Upload -->
+					<div class="mx-auto max-w-md rounded-xl border border-gray-700 bg-gray-800 p-6">
+						<label class="mb-4 block text-sm font-medium text-gray-300">
+							Select Fashion Image
+						</label>
+						<input
+							type="file"
+							accept="image/*"
+							on:change={handleFileSelect}
+							class="mb-4 w-full rounded-lg border border-gray-600 bg-gray-700 p-2 text-white file:mr-4 file:rounded file:border-0 file:bg-cyan-600 file:px-4 file:py-2 file:text-white file:hover:bg-cyan-700"
+						/>
+
+						{#if selectedFile}
+							<div class="mb-4 text-center">
+								<p class="text-sm text-green-400">✅ {selectedFile.name} selected</p>
+								<img
+									src={URL.createObjectURL(selectedFile)}
+									alt="Preview"
+									class="mx-auto mt-2 max-h-32 rounded border border-gray-600"
+								/>
+							</div>
+						{/if}
+
+						<button
+							on:click={handleClassifyOnly}
+							disabled={!selectedFile || isClassifying}
+							class="w-full rounded-lg bg-purple-600 px-4 py-2 font-medium text-white transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:bg-gray-600"
+						>
+							{#if isClassifying}
+								<span class="flex items-center justify-center">
+									<svg class="mr-2 h-4 w-4 animate-spin" viewBox="0 0 24 24">
+										<circle
+											class="opacity-25"
+											cx="12"
+											cy="12"
+											r="10"
+											stroke="currentColor"
+											stroke-width="4"
+											fill="none"
+										></circle>
+										<path
+											class="opacity-75"
+											fill="currentColor"
+											d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+										></path>
+									</svg>
+									Classifying...
+								</span>
+							{:else}
+								🏷️ Classify Image
+							{/if}
+						</button>
+					</div>
+
+					<!-- Classification Results -->
+					{#if classificationResults}
+						<div class="rounded-xl border border-gray-700 bg-gray-800 p-6">
+							{#if classificationResults.success}
+								<h3 class="mb-4 text-xl font-semibold text-green-400">✅ Classification Results</h3>
+
+								<!-- Top Prediction -->
+								<div class="mb-4 rounded-lg bg-gray-700 p-4">
+									<h4 class="mb-2 font-semibold text-cyan-400">Primary Classification</h4>
+									<p class="text-lg">
+										<span class="font-bold">{classificationResults.predicted_category}</span>
+										<span class="ml-2 text-sm text-gray-400">
+											({(classificationResults.confidence * 100).toFixed(1)}% confidence)
+										</span>
+									</p>
+								</div>
+
+								<!-- All Predictions -->
+								{#if classificationResults.all_predictions}
+									<div>
+										<h4 class="mb-3 font-semibold text-cyan-400">All Predictions</h4>
+										<div class="space-y-2">
+											{#each classificationResults.all_predictions as prediction, index}
+												<div class="flex items-center justify-between rounded bg-gray-700 p-3">
+													<div class="flex items-center">
+														<span class="mr-2 text-sm text-gray-400">#{index + 1}</span>
+														<span class="text-sm font-medium">{prediction.category}</span>
+													</div>
+													<div class="flex items-center">
+														<div class="mr-3 h-2 w-24 rounded-full bg-gray-600">
+															<div
+																class="h-2 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500"
+																style="width: {prediction.confidence * 100}%"
+															></div>
+														</div>
+														<span class="w-12 text-right text-xs text-gray-400">
+															{(prediction.confidence * 100).toFixed(1)}%
+														</span>
+													</div>
+												</div>
+											{/each}
+										</div>
+									</div>
+								{/if}
+							{:else}
+								<div class="text-center">
+									<h3 class="mb-2 text-xl font-semibold text-red-400">❌ Classification Failed</h3>
+									<p class="text-gray-400">{classificationResults.error}</p>
+									<p class="mt-2 text-sm text-gray-500">
+										Please try again or check your image file.
+									</p>
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- System Status Tab -->
+			{#if activeTab === 'health'}
+				<div class="space-y-6">
+					<div class="flex items-center justify-between">
+						<h2 class="text-2xl font-semibold">System Status</h2>
+						<button
+							on:click={refreshHealth}
+							class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-cyan-700"
+						>
+							🔄 Refresh Status
+						</button>
+					</div>
+
+					<!-- Health Data -->
+					{#if healthData}
+						<div class="grid gap-6 md:grid-cols-2">
+							<!-- Models Status -->
+							<div class="rounded-xl border border-gray-700 bg-gray-800 p-6">
+								<h3 class="mb-4 text-lg font-semibold text-cyan-400">AI Models</h3>
+								<div class="space-y-3">
+									<div class="flex items-center justify-between">
+										<span>Embedding Model:</span>
+										<span
+											class={healthData.models_loaded.embedding_model
+												? 'text-green-400'
+												: 'text-red-400'}
+										>
+											{healthData.models_loaded.embedding_model ? '✅ Loaded' : '❌ Not Loaded'}
+										</span>
+									</div>
+									<div class="flex items-center justify-between">
+										<span>Classification Model:</span>
+										<span
+											class={healthData.models_loaded.classification_model
+												? 'text-green-400'
+												: 'text-red-400'}
+										>
+											{healthData.models_loaded.classification_model
+												? '✅ Loaded'
+												: '❌ Not Loaded'}
+										</span>
+									</div>
+								</div>
+							</div>
+
+							<!-- System Components -->
+							<div class="rounded-xl border border-gray-700 bg-gray-800 p-6">
+								<h3 class="mb-4 text-lg font-semibold text-cyan-400">System Components</h3>
+								<div class="space-y-3">
+									<div class="flex items-center justify-between">
+										<span>Database:</span>
+										<span
+											class={healthData.database_accessible ? 'text-green-400' : 'text-red-400'}
+										>
+											{healthData.database_accessible ? '✅ Connected' : '❌ Disconnected'}
+										</span>
+									</div>
+									<div class="flex items-center justify-between">
+										<span>TensorFlow:</span>
+										<span
+											class={healthData.imports_working.tensorflow
+												? 'text-green-400'
+												: 'text-red-400'}
+										>
+											{healthData.imports_working.tensorflow ? '✅ Working' : '❌ Error'}
+										</span>
+									</div>
+									<div class="flex items-center justify-between">
+										<span>Image Processing:</span>
+										<span
+											class={healthData.imports_working.pil ? 'text-green-400' : 'text-red-400'}
+										>
+											{healthData.imports_working.pil ? '✅ Working' : '❌ Error'}
+										</span>
+									</div>
+								</div>
+							</div>
+						</div>
+
+						<!-- System Info -->
+						<div class="rounded-xl border border-gray-700 bg-gray-800 p-6">
+							<h3 class="mb-4 text-lg font-semibold text-cyan-400">System Information</h3>
+							<div class="grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
+								<div class="rounded bg-gray-700 p-3 text-center">
+									<p class="text-gray-400">API Status</p>
+									<p class="text-lg font-bold text-green-400">Online</p>
+								</div>
+								<div class="rounded bg-gray-700 p-3 text-center">
+									<p class="text-gray-400">Last Updated</p>
+									<p class="text-lg font-bold text-white">
+										{new Date(healthData.timestamp).toLocaleTimeString()}
+									</p>
+								</div>
+								<div class="rounded bg-gray-700 p-3 text-center">
+									<p class="text-gray-400">Total Images</p>
+									<p class="text-lg font-bold text-white">
+										{allImages.length}
+									</p>
+								</div>
+							</div>
+						</div>
+					{:else}
+						<div class="py-12 text-center">
+							<p class="text-gray-400">No health data available</p>
+						</div>
+					{/if}
+
+					<!-- Categories -->
+					{#if categories.length > 0}
+						<div class="rounded-xl border border-gray-700 bg-gray-800 p-6">
+							<h3 class="mb-4 text-lg font-semibold text-cyan-400">
+								Supported Categories ({categories.length})
+							</h3>
+							<div class="grid grid-cols-1 gap-2 md:grid-cols-3">
+								{#each categories as category}
+									<div
+										class="rounded bg-gray-700 p-3 text-center text-sm transition-colors hover:bg-gray-600"
+									>
+										{category}
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
+				</div>
+			{/if}
+		{:else}
+			<div class="py-12 text-center">
+				<p class="mb-4 text-lg text-gray-400">API is currently offline</p>
+				<p class="text-gray-500">Please check your connection and try again</p>
+			</div>
+		{/if}
+	</div>
+</div>
