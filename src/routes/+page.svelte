@@ -3,9 +3,12 @@
 	import { onMount } from 'svelte';
 
 	let allImages = $state([]);
-	let imageStats = $state(null);
+	let imageStats = $state(null); // This will be sample stats (for display purposes)
+	let databaseStats = $state(null); // This will be full database stats
 	let isDiscoveringImages = $state(false);
+	let isLoadingStats = $state(false);
 	let discoveryError = $state('');
+	let statsError = $state('');
 
 	$inspect(allImages);
 
@@ -68,22 +71,52 @@
 		}
 	}
 
+	async function loadDatabaseStats() {
+		isLoadingStats = true;
+		statsError = '';
+
+		try {
+			const response = await fetch(`${API_URL}/database-stats`);
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+			const data = await response.json();
+			databaseStats = data;
+
+			console.log('📊 Database statistics loaded:', data.total_statistics);
+		} catch (error) {
+			console.error('Failed to load database statistics:', error);
+			statsError = error.message;
+		} finally {
+			isLoadingStats = false;
+		}
+	}
+
 	function refreshImages() {
 		discoverAllImages();
 	}
 
-	let imageFilter = $state('all'); // 'all', 'validation', 'training', 'uploaded'
+	function refreshStats() {
+		loadDatabaseStats();
+	}
+
+	let imageFilter = $state('all');
 
 	// Filter images based on type
 	let filteredImages = $derived(
 		imageFilter === 'all' ? allImages : allImages.filter((img) => img.type === imageFilter)
 	);
 
+	// Use database stats for display, fallback to sample stats
+	let displayStats = $derived(
+		databaseStats?.type_breakdown || imageStats || { validation: 0, training: 0, uploaded: 0 }
+	);
+	let totalItems = $derived(databaseStats?.total_statistics?.total_items || allImages.length);
+
 	// Initialize on mount
 	onMount(async () => {
 		try {
-			// Load all data
-			await discoverAllImages();
+			// Load both image samples and database statistics
+			await Promise.all([discoverAllImages(), loadDatabaseStats()]);
 		} catch (error) {
 			console.log(error);
 		}
@@ -115,51 +148,79 @@
 						<div>
 							<h1 class="text-foreground-950 text-3xl font-bold">Fashion Gallery</h1>
 							<p class="text-foreground-600">Browse and explore fashion items in our database</p>
+							{#if databaseStats}
+								<p class="text-foreground-500 text-sm">
+									Database contains {databaseStats.total_statistics.total_items.toLocaleString()} total
+									items
+								</p>
+							{/if}
 						</div>
 					</div>
 
-					<button
-						onclick={refreshImages}
-						disabled={isDiscoveringImages}
-						class="text-foreground-950 disabled:bg-background-400 disabled:text-foreground-500 rounded-lg bg-orange-600 px-4 py-2 text-sm font-medium transition-all duration-200 hover:bg-orange-700 focus:ring-2 focus:ring-orange-500/50 focus:outline-none disabled:cursor-not-allowed"
-					>
-						{#if isDiscoveringImages}
-							<span class="flex items-center gap-2">
-								<svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24">
-									<circle
-										class="opacity-25"
-										cx="12"
-										cy="12"
-										r="10"
-										stroke="currentColor"
-										stroke-width="4"
-										fill="none"
-									></circle>
-									<path
-										class="opacity-75"
-										fill="currentColor"
-										d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-									></path>
-								</svg>
-								Discovering...
-							</span>
-						{:else}
-							<span class="flex items-center gap-2">
-								<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										stroke-width="2"
-										d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-									></path>
-								</svg>
-								Refresh Images
-							</span>
-						{/if}
-					</button>
+					<div class="flex gap-2">
+						<button
+							onclick={refreshStats}
+							disabled={isLoadingStats}
+							class="text-foreground-950 disabled:bg-background-400 disabled:text-foreground-500 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium transition-all duration-200 hover:bg-blue-700 focus:ring-2 focus:ring-blue-500/50 focus:outline-none disabled:cursor-not-allowed"
+						>
+							{#if isLoadingStats}
+								<span class="flex items-center gap-2">
+									<svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24">
+										<circle
+											class="opacity-25"
+											cx="12"
+											cy="12"
+											r="10"
+											stroke="currentColor"
+											stroke-width="4"
+											fill="none"
+										></circle>
+										<path
+											class="opacity-75"
+											fill="currentColor"
+											d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+										></path>
+									</svg>
+									Loading...
+								</span>
+							{:else}
+								📊 Refresh Stats
+							{/if}
+						</button>
+
+						<button
+							onclick={refreshImages}
+							disabled={isDiscoveringImages}
+							class="text-foreground-950 disabled:bg-background-400 disabled:text-foreground-500 rounded-lg bg-orange-600 px-4 py-2 text-sm font-medium transition-all duration-200 hover:bg-orange-700 focus:ring-2 focus:ring-orange-500/50 focus:outline-none disabled:cursor-not-allowed"
+						>
+							{#if isDiscoveringImages}
+								<span class="flex items-center gap-2">
+									<svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24">
+										<circle
+											class="opacity-25"
+											cx="12"
+											cy="12"
+											r="10"
+											stroke="currentColor"
+											stroke-width="4"
+											fill="none"
+										></circle>
+										<path
+											class="opacity-75"
+											fill="currentColor"
+											d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+										></path>
+									</svg>
+									Discovering...
+								</span>
+							{:else}
+								🔄 Refresh Images
+							{/if}
+						</button>
+					</div>
 				</div>
 
-				<!-- Discovery Error -->
+				<!-- Errors -->
 				{#if discoveryError}
 					<div class="mb-6 rounded-xl border border-yellow-200 bg-yellow-500/10 p-4">
 						<div class="flex items-center gap-3">
@@ -188,10 +249,38 @@
 					</div>
 				{/if}
 
-				<!-- Statistics and Filter -->
-				{#if imageStats}
+				{#if statsError}
+					<div class="mb-6 rounded-xl border border-red-200 bg-red-500/10 p-4">
+						<div class="flex items-center gap-3">
+							<div class="rounded-full bg-red-500/20 p-2">
+								<svg
+									class="h-5 w-5 text-red-600"
+									fill="none"
+									stroke="currentColor"
+									viewBox="0 0 24 24"
+								>
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										stroke-width="2"
+										d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"
+									></path>
+								</svg>
+							</div>
+							<div>
+								<p class="font-medium text-red-800">Statistics loading failed: {statsError}</p>
+								<p class="text-sm text-red-700">
+									Showing sample statistics instead of full database totals.
+								</p>
+							</div>
+						</div>
+					</div>
+				{/if}
+
+				<!-- Database Statistics Cards -->
+				{#if displayStats}
 					<div class="mb-6 space-y-4">
-						<!-- Statistics Cards -->
+						<!-- Statistics Cards - Now showing DATABASE totals -->
 						<div class="grid grid-cols-1 gap-4 md:grid-cols-4">
 							<div class="bg-background-100 border-background-200 rounded-lg border p-4">
 								<div class="flex items-center gap-3">
@@ -212,7 +301,18 @@
 									</div>
 									<div>
 										<p class="text-foreground-600 text-sm">Validation</p>
-										<p class="text-foreground-950 text-xl font-bold">{imageStats.validation}</p>
+										<p class="text-foreground-950 text-xl font-bold">
+											{(
+												displayStats.validation?.total ||
+												displayStats.validation ||
+												0
+											).toLocaleString()}
+										</p>
+										{#if databaseStats}
+											<p class="text-foreground-500 text-xs">
+												{displayStats.validation?.with_embeddings || 0} searchable
+											</p>
+										{/if}
 									</div>
 								</div>
 							</div>
@@ -236,7 +336,18 @@
 									</div>
 									<div>
 										<p class="text-foreground-600 text-sm">Training</p>
-										<p class="text-foreground-950 text-xl font-bold">{imageStats.training}</p>
+										<p class="text-foreground-950 text-xl font-bold">
+											{(
+												displayStats.training?.total ||
+												displayStats.training ||
+												0
+											).toLocaleString()}
+										</p>
+										{#if databaseStats}
+											<p class="text-foreground-500 text-xs">
+												{displayStats.training?.with_embeddings || 0} searchable
+											</p>
+										{/if}
 									</div>
 								</div>
 							</div>
@@ -260,7 +371,18 @@
 									</div>
 									<div>
 										<p class="text-foreground-600 text-sm">Uploaded</p>
-										<p class="text-foreground-950 text-xl font-bold">{imageStats.uploaded}</p>
+										<p class="text-foreground-950 text-xl font-bold">
+											{(
+												displayStats.uploaded?.total ||
+												displayStats.uploaded ||
+												0
+											).toLocaleString()}
+										</p>
+										{#if databaseStats}
+											<p class="text-foreground-500 text-xs">
+												{displayStats.uploaded?.with_embeddings || 0} searchable
+											</p>
+										{/if}
 									</div>
 								</div>
 							</div>
@@ -284,13 +406,20 @@
 									</div>
 									<div>
 										<p class="text-foreground-600 text-sm">Total</p>
-										<p class="text-foreground-950 text-xl font-bold">{allImages.length}</p>
+										<p class="text-foreground-950 text-xl font-bold">
+											{totalItems.toLocaleString()}
+										</p>
+										{#if databaseStats}
+											<p class="text-foreground-500 text-xs">
+												{databaseStats.total_statistics.total_with_embeddings} searchable
+											</p>
+										{/if}
 									</div>
 								</div>
 							</div>
 						</div>
 
-						<!-- Filter Buttons -->
+						<!-- Filter Buttons - Update counts to show database totals -->
 						<div class="flex justify-center">
 							<div class="bg-background-100 border-background-200 flex rounded-xl border p-1">
 								<button
@@ -300,7 +429,7 @@
 										: 'text-foreground-600 hover:text-foreground-800 hover:bg-background-200'}"
 									onclick={() => (imageFilter = 'all')}
 								>
-									All ({allImages.length})
+									All ({allImages.length} shown)
 								</button>
 								<button
 									class="rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 {imageFilter ===
@@ -309,7 +438,7 @@
 										: 'text-foreground-600 hover:text-foreground-800 hover:bg-background-200'}"
 									onclick={() => (imageFilter = 'validation')}
 								>
-									Validation ({imageStats.validation})
+									Validation ({allImages.filter((img) => img.type === 'validation').length} shown)
 								</button>
 								<button
 									class="rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 {imageFilter ===
@@ -318,7 +447,7 @@
 										: 'text-foreground-600 hover:text-foreground-800 hover:bg-background-200'}"
 									onclick={() => (imageFilter = 'training')}
 								>
-									Training ({imageStats.training})
+									Training ({allImages.filter((img) => img.type === 'training').length} shown)
 								</button>
 								<button
 									class="rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 {imageFilter ===
@@ -327,7 +456,7 @@
 										: 'text-foreground-600 hover:text-foreground-800 hover:bg-background-200'}"
 									onclick={() => (imageFilter = 'uploaded')}
 								>
-									Uploaded ({imageStats.uploaded})
+									Uploaded ({allImages.filter((img) => img.type === 'uploaded').length} shown)
 								</button>
 							</div>
 						</div>
